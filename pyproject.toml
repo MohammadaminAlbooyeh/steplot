@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "steplot"
+version = "0.1.0"
+description = "Lightweight observability for AI agents"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/yourusername/steplot"
+
+[tool.hatch.build.targets.wheel]
+packages = ["steplot"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v"

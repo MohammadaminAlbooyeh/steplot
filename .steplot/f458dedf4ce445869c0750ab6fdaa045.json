@@ -1,0 +1,36 @@
+{
+  "id": "f458dedf4ce445869c0750ab6fdaa045",
+  "started_at": "2026-09-19T22:22:38.405104",
+  "steps": [
+    {
+      "name": "fetch_data",
+      "status": "success",
+      "input": {
+        "args": [
+          "test query"
+        ],
+        "kwargs": {}
+      },
+      "output": {
+        "result": "data for test query"
+      },
+      "error": null,
+      "duration": 0.100618
+    },
+    {
+      "name": "process_data",
+      "status": "success",
+      "input": {
+        "args": [
+          {
+            "result": "data for test query"
+          }
+        ],
+        "kwargs": {}
+      },
+      "output": "processed: data for test query",
+      "error": null,
+      "duration": 0.100608
+    }
+  ]
+}
