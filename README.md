@@ -157,6 +157,51 @@ steplot is organized into four small modules, each with a single responsibility:
                 └────────────────┘  └────────────────┘
 ```
 
+Rendered version (GitHub renders this as an actual diagram):
+
+```mermaid
+flowchart TD
+    A["User code<br/>@track / run_context / step_context / log_event"]
+
+    subgraph T["steplot.tracker"]
+        B["ContextVars: _current_run, _current_step"]
+        C["track() decorator"]
+        D["run_context() / step_context()"]
+        E["log_event()"]
+    end
+
+    subgraph M["steplot.models"]
+        F["Run"]
+        G["Step (tree via children)"]
+        H["Event"]
+    end
+
+    subgraph S["steplot.storage"]
+        I["save_run() → JSON file"]
+        J["load_run() → Run"]
+    end
+
+    subgraph V["steplot.display"]
+        K["display_run() → terminal tree"]
+    end
+
+    A --> C
+    A --> D
+    A --> E
+    C --> B
+    D --> B
+    E --> B
+    B --> F
+    B --> G
+    F --> G
+    G --> G
+    G --> H
+    F --> H
+    F --> I
+    J --> F
+    F --> K
+```
+
 **How it fits together:**
 
 - `steplot.models` defines the data: `Run` is the top-level container, `Step` nodes form a tree via `children`, and `Event` records are attached to either a `Run` or a `Step`.
