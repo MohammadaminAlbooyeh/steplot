@@ -1,10 +1,9 @@
 """Simple example demonstrating steplot with a fake agent."""
 
 import asyncio
+import logging
 
-from steplot import track, display_run, save_run
-from steplot.tracker import _current_run
-from steplot.models import Run
+from steplot import display_run, log_event, run_context, save_run, step_context, track
 
 
 @track
@@ -22,18 +21,17 @@ async def process_data(data: dict) -> str:
 
 
 async def main():
-    # Create a run explicitly so we can access it after steps complete
-    run = Run()
-    token = _current_run.set(run)
-    try:
-        data = await fetch_data("test query")
-        result = await process_data(data)
-        print(f"agent result: {result}")
-    finally:
-        _current_run.reset(token)
+    with run_context("simple-agent", agent="demo") as run:
+        with step_context("fetch"):
+            log_event(logging.INFO, "fetching data", query="test query")
+            data = await fetch_data("test query")
+        with step_context("process"):
+            log_event(logging.INFO, "processing data")
+            result = await process_data(data)
+            print(f"agent result: {result}")
 
     display_run(run)
-    save_run(run)
+    save_run(run, "steplot/runs/example-run.json")
 
 
 asyncio.run(main())

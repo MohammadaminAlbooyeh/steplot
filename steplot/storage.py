@@ -1,13 +1,14 @@
 """Storage for steplot runs — JSON-based."""
 
 import json
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
 from .models import Run, StepStatus
 
 
 def _serialize(obj):
+    """JSON default serializer for values not natively JSON-serializable."""
     if isinstance(obj, datetime):
         return obj.isoformat()
     if isinstance(obj, StepStatus):
@@ -15,52 +16,36 @@ def _serialize(obj):
     return str(obj)
 
 
-def save_run(run: Run, path: str = ".steplot") -> None:
-    """Save a Run to a JSON file under the given directory.
+def save_run(run: Run, path: str = ".steplot") -> str:
+    """Save a Run to a JSON file.
+
+    The target is interpreted as a file path when it has a file suffix (for
+    example ``runs/run-1.json``), and as a directory otherwise. In the
+    directory case the file is written as ``{run.id}.json`` inside it. Parent
+    directories are created as needed.
 
     Args:
         run: The Run to persist.
-        path: Directory to save into (created if missing).
+        path: Destination file path (with suffix) or directory.
+
+    Returns:
+        The absolute path of the file that was written.
     """
-    dir_path = Path(path)
-    dir_path.mkdir(parents=True, exist_ok=True)
-    file = dir_path / f"{run.id}.json"
-    data = {
-        "id": run.id,
-        "started_at": run.started_at,
-        "steps": [
-            {
-                "name": s.name,
-                "status": s.status,
-                "input": s.input,
-                "output": s.output,
-                "error": s.error,
-                "duration": s.duration,
-            }
-            for s in run.steps
-        ],
-    }
-    file.write_text(json.dumps(data, default=_serialize, indent=2))
+    target = Path(path)
+    if target.suffix:
+        # Treat as an explicit file path (e.g. "runs/run-1.json").
+        target.parent.mkdir(parents=True, exist_ok=True)
+        file = target
+    else:
+        # Treat as a directory; write {run.id}.json inside it.
+        target.mkdir(parents=True, exist_ok=True)
+        file = target / f"{run.id}.json"
+
+    file.write_text(json.dumps(run.to_dict(), default=_serialize, indent=2))
+    return str(file)
 
 
 def load_run(path: str) -> Run:
     """Load a Run from a JSON file path."""
     data = json.loads(Path(path).read_text())
-    from .models import Step
-
-    steps = []
-    for s in data.get("steps", []):
-        steps.append(
-            Step(
-                name=s["name"],
-                status=StepStatus(s["status"]),
-                input=s.get("input"),
-                output=s.get("output"),
-                error=s.get("error"),
-            )
-        )
-    return Run(
-        id=data.get("id"),
-        started_at=datetime.fromisoformat(data["started_at"]) if data.get("started_at") else datetime.now(),
-        steps=steps,
-    )
+    return Run.from_dict(data)

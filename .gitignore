@@ -26,4 +26,5 @@ htmlcov/
 
 # steplot runtime artifacts
 steplot/runs/
+.steplot/
 *.log
