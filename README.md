@@ -74,6 +74,64 @@ save_run(run, "steplot/runs/run-1.json")
 loaded = load_run("steplot/runs/run-1.json")
 ```
 
+## Architecture
+
+steplot is organized into four small modules, each with a single responsibility:
+
+```mermaid
+flowchart TD
+    subgraph User Code
+        A["@track / run_context / step_context / log_event"]
+    end
+
+    subgraph "steplot.tracker"
+        B["ContextVars: _current_run, _current_step"]
+        C["track() decorator"]
+        D["run_context() / step_context()"]
+        E["log_event()"]
+    end
+
+    subgraph "steplot.models"
+        F["Run"]
+        G["Step (tree via children)"]
+        H["Event"]
+    end
+
+    subgraph "steplot.storage"
+        I["save_run() -> JSON file"]
+        J["load_run() -> Run"]
+    end
+
+    subgraph "steplot.display"
+        K["display_run() -> terminal tree"]
+    end
+
+    A --> C
+    A --> D
+    A --> E
+    C --> B
+    D --> B
+    E --> B
+    B --> F
+    B --> G
+    F --> G
+    G --> G
+    G --> H
+    F --> H
+    F --> I
+    J --> F
+    F --> K
+```
+
+**How it fits together:**
+
+- `steplot.models` defines the data: `Run` is the top-level container, `Step` nodes form a tree via `children`, and `Event` records are attached to either a `Run` or a `Step`.
+- `steplot.tracker` holds the runtime state (`ContextVar`s for the current run/step, async-safe) and exposes the public API: the `@track` decorator, `run_context`/`step_context` context managers, and `log_event`. All of them read/write the same `Run`/`Step` tree defined in `models`.
+- `steplot.storage` serializes a `Run` tree to JSON (`save_run`) and deserializes it back (`load_run`), with no dependency on the tracker's runtime state.
+- `steplot.display` walks a `Run` tree read-only and renders it as a boxed tree in the terminal.
+
+Only `models.Run`/`Step`/`Event` are shared across modules — `tracker`, `storage`, and `display` each depend on `models` but not on each other, so a `Run` produced live via `run_context` and one loaded from disk via `load_run` behave identically to `display_run`.
+
 ## API reference
 
 ### `track`
