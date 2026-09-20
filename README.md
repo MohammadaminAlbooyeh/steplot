@@ -17,8 +17,45 @@ JSON file.
 
 ## Installation
 
+**Requirements:** Python 3.12 or newer. steplot has no runtime dependencies.
+
+### From PyPI
+
 ```bash
+pip install steplot
+```
+
+### From source (editable install)
+
+Clone the repository and install it in editable mode:
+
+```bash
+git clone https://github.com/MohammadaminAlbooyeh/steplot.git
+cd steplot
 pip install -e .
+```
+
+### Development install
+
+To work on steplot itself, install the optional `dev` extras (pytest, ruff, mypy):
+
+```bash
+pip install -e ".[dev]"
+```
+
+Then run the checks used in CI:
+
+```bash
+ruff check steplot tests examples
+ruff format --check steplot tests examples
+mypy steplot tests
+pytest
+```
+
+### Verifying the install
+
+```bash
+python -c "import steplot; print(steplot.__version__)"
 ```
 
 ## Quick start
@@ -78,49 +115,46 @@ loaded = load_run("steplot/runs/run-1.json")
 
 steplot is organized into four small modules, each with a single responsibility:
 
-```mermaid
-flowchart TD
-    subgraph User Code
-        A["@track / run_context / step_context / log_event"]
-    end
-
-    subgraph "steplot.tracker"
-        B["ContextVars: _current_run, _current_step"]
-        C["track() decorator"]
-        D["run_context() / step_context()"]
-        E["log_event()"]
-    end
-
-    subgraph "steplot.models"
-        F["Run"]
-        G["Step (tree via children)"]
-        H["Event"]
-    end
-
-    subgraph "steplot.storage"
-        I["save_run() -> JSON file"]
-        J["load_run() -> Run"]
-    end
-
-    subgraph "steplot.display"
-        K["display_run() -> terminal tree"]
-    end
-
-    A --> C
-    A --> D
-    A --> E
-    C --> B
-    D --> B
-    E --> B
-    B --> F
-    B --> G
-    F --> G
-    G --> G
-    G --> H
-    F --> H
-    F --> I
-    J --> F
-    F --> K
+```text
+                              User code
+              (@track, run_context, step_context, log_event)
+                                  │
+                                  ▼
+                        ┌───────────────────┐
+                        │  steplot.tracker   │
+                        │────────────────────│
+                        │ ContextVars:       │
+                        │  _current_run      │
+                        │  _current_step     │
+                        │                    │
+                        │ track()            │
+                        │ run_context()      │
+                        │ step_context()     │
+                        │ log_event()        │
+                        └─────────┬──────────┘
+                                  │ creates / mutates
+                                  ▼
+                        ┌───────────────────┐
+                        │  steplot.models    │
+                        │────────────────────│
+                        │  Run               │
+                        │   ├─ Step ─┬─ Step │  (tree via .children)
+                        │   │        └─ ...  │
+                        │   ├─ Event         │  (on Run or any Step)
+                        │   └─ ...           │
+                        └───┬─────────────┬──┘
+                            │             │
+                 reads/writes         read-only
+                            │             │
+                            ▼             ▼
+                ┌────────────────┐  ┌────────────────┐
+                │ steplot.storage │  │ steplot.display │
+                │─────────────────│  │─────────────────│
+                │ save_run()      │  │ display_run()   │
+                │  Run -> JSON    │  │  Run -> terminal│
+                │ load_run()      │  │  tree output    │
+                │  JSON -> Run    │  │                 │
+                └────────────────┘  └────────────────┘
 ```
 
 **How it fits together:**
