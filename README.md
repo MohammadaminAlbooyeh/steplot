@@ -14,6 +14,9 @@ JSON file.
 - `log_event` -- emit structured events into the current step.
 - `display_run` -- pretty-print a run tree to the terminal.
 - `save_run` / `load_run` -- persist runs as JSON.
+- `to_mermaid` / `to_html` -- export a run as a Mermaid flowchart or standalone HTML report.
+- `Run.summary()` -- aggregate step counts, durations, and the slowest step.
+- `steplot` CLI -- `show`/`export` a saved run from the terminal, no Python needed.
 
 ## Installation
 
@@ -109,6 +112,37 @@ from steplot import save_run, load_run
 
 save_run(run, "steplot/runs/run-1.json")
 loaded = load_run("steplot/runs/run-1.json")
+```
+
+## Exporting to Mermaid / HTML
+
+```python
+from steplot import run_context, to_mermaid, to_html
+
+with run_context("pipeline") as run:
+    ...
+
+print(to_mermaid(run))          # Mermaid flowchart TD source
+to_html(run, "report.html")     # standalone HTML file with the diagram embedded
+```
+
+`to_mermaid` walks the run's step tree and renders it as a `flowchart TD`, coloring
+each node by its `StepStatus` (green = success, red = failed, amber = running).
+`to_html` wraps that diagram in a self-contained HTML page (loads mermaid.js from a
+CDN) that can be opened directly in a browser or attached to a report.
+
+See [`examples/export_run.py`](examples/export_run.py) for a full example.
+
+## CLI
+
+Installing steplot also installs a `steplot` command for inspecting runs saved with
+`save_run()`, without writing any Python:
+
+```bash
+steplot show run.json                     # print the run tree
+steplot show run.json --summary           # ...with the step-count/duration footer
+steplot export run.json                   # Mermaid source to stdout
+steplot export run.json --format html -o report.html
 ```
 
 ## Architecture

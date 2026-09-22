@@ -187,6 +187,61 @@ class Run:
         if self.ended_at is None:
             self.ended_at = datetime.now()
 
+    def _iter_steps(self) -> list[Step]:
+        """Return every step in the tree, flattened, in depth-first order."""
+        flat: list[Step] = []
+
+        def walk(step: Step) -> None:
+            flat.append(step)
+            for child in step.children:
+                walk(child)
+
+        for step in self.steps:
+            walk(step)
+        return flat
+
+    def summary(self) -> dict[str, Any]:
+        """Return aggregate metrics over every step in the run (including nested).
+
+        Returns:
+            A dict with:
+                total_steps: total number of steps (all levels).
+                success: count of steps with SUCCESS status.
+                failed: count of steps with FAILED status.
+                running: count of steps still RUNNING.
+                total_duration: sum of all finished steps' durations, in seconds.
+                slowest_step: the (name, duration) of the slowest finished step,
+                    or None if no step has finished yet.
+                by_name: mapping of step name -> {"count", "total_duration"},
+                    aggregated across all steps sharing that name.
+        """
+        steps = self._iter_steps()
+
+        success = sum(1 for s in steps if s.status == StepStatus.SUCCESS)
+        failed = sum(1 for s in steps if s.status == StepStatus.FAILED)
+        running = sum(1 for s in steps if s.status == StepStatus.RUNNING)
+
+        durations = [(s.name, s.duration) for s in steps if s.duration is not None]
+        total_duration = sum(d for _, d in durations)
+        slowest_step = max(durations, key=lambda pair: pair[1]) if durations else None
+
+        by_name: dict[str, dict[str, Any]] = {}
+        for s in steps:
+            entry = by_name.setdefault(s.name, {"count": 0, "total_duration": 0.0})
+            entry["count"] += 1
+            if s.duration is not None:
+                entry["total_duration"] += s.duration
+
+        return {
+            "total_steps": len(steps),
+            "success": success,
+            "failed": failed,
+            "running": running,
+            "total_duration": total_duration,
+            "slowest_step": slowest_step,
+            "by_name": by_name,
+        }
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,

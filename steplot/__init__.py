@@ -1,8 +1,17 @@
 """steplot — lightweight agent step tracker with decorator and logging support."""
 
 from .display import display_run
+from .export import to_html, to_mermaid
 from .storage import load_run, save_run
-from .tracker import get_current_run, get_current_step, log_event, reset, run_context, step_context, track
+from .tracker import (
+    get_current_run,
+    get_current_step,
+    log_event,
+    reset,
+    run_context,
+    step_context,
+    track,
+)
 
 __all__ = [
     "track",
@@ -15,6 +24,8 @@ __all__ = [
     "display_run",
     "save_run",
     "load_run",
+    "to_mermaid",
+    "to_html",
 ]
 
 __version__ = "0.1.0"

@@ -41,11 +41,32 @@ def _render_event(event: Event, prefix: str, lines: list[str]) -> None:
     lines.append(f"{prefix}  • {event.message}")
 
 
-def display_run(run: Run) -> None:
+def _render_summary(run: Run, lines: list[str]) -> None:
+    """Append a summary footer (step counts, total/slowest duration) to ``lines``."""
+    summary = run.summary()
+    lines.append("")
+    lines.append(
+        f"  Σ {summary['total_steps']} steps"
+        f"  ✓{summary['success']}"
+        f"  ✗{summary['failed']}"
+        f"  …{summary['running']}"
+        f"  total={summary['total_duration']:.2f}s"
+    )
+    if summary["slowest_step"] is not None:
+        name, duration = summary["slowest_step"]
+        lines.append(f"  slowest: {name}  [{duration:.2f}s]")
+
+
+def display_run(run: Run, show_summary: bool = False) -> None:
     """Pretty-print a Run tree to stdout.
 
     Renders the run name, total duration, and each step (including nested
     children and structured events) as a boxed tree.
+
+    Args:
+        run: The Run to render.
+        show_summary: When True, append a summary footer with step counts,
+            total duration, and the slowest step (see ``Run.summary()``).
     """
     title = f"Run: {run.name}"
     duration = _format_duration(run.duration)
@@ -59,6 +80,9 @@ def display_run(run: Run) -> None:
 
     for event in run.events:
         lines.append(f"  • {event.message}")
+
+    if show_summary:
+        _render_summary(run, lines)
 
     top = f"╔══ {title} ═══"
     width = max([len(line) for line in lines] + [len(top) - 2])

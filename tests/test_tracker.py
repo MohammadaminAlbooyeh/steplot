@@ -239,6 +239,28 @@ class TestDisplay:
         # The event message should be rendered beneath the step.
         assert "validated ok" in out
 
+    def test_display_run_with_summary(self, capsys):
+        run = Run(name="my-run")
+        run.add_step("step1").succeed(output="ok")
+        run.add_step("step2").fail("an error")
+        run.finish()
+
+        display_run(run, show_summary=True)
+        out = capsys.readouterr().out
+        assert "Σ 2 steps" in out
+        assert "✓1" in out
+        assert "✗1" in out
+        assert "slowest:" in out
+
+    def test_display_run_without_summary_by_default(self, capsys):
+        run = Run(name="my-run")
+        run.add_step("step1").succeed()
+        run.finish()
+
+        display_run(run)
+        out = capsys.readouterr().out
+        assert "Σ" not in out
+
 
 class TestStorage:
     def test_save_and_load(self, tmp_path):
@@ -560,3 +582,75 @@ class TestDocumentedExamples:
         assert run.steps[1].children[0].name == "validate"
         assert run.steps[1].children[0].children[0].name == "score"
         assert get_current_run() is None
+
+
+class TestAsyncParallel:
+    """asyncio.gather runs each coroutine as a Task with its own copy of the
+    current context, so ContextVar mutations inside one task must not leak
+    into sibling tasks. These tests pin that behavior down.
+    """
+
+    def test_parallel_track_calls_create_independent_steps(self):
+        @track
+        async def work(n: int) -> int:
+            await asyncio.sleep(0.03 - n * 0.005)
+            return n
+
+        async def main():
+            with run_context("parallel") as run:
+                results = await asyncio.gather(work(1), work(2), work(3))
+            return run, results
+
+        run, results = asyncio.run(main())
+
+        assert results == [1, 2, 3]
+        assert [s.name for s in run.steps] == ["work", "work", "work"]
+        assert {s.output for s in run.steps} == {1, 2, 3}
+        assert all(s.status == StepStatus.SUCCESS for s in run.steps)
+
+    def test_parallel_step_context_nesting_does_not_cross_contaminate(self):
+        @track
+        async def leaf(n: int) -> int:
+            await asyncio.sleep(0.01)
+            return n
+
+        async def branch(n: int) -> None:
+            with step_context(f"branch-{n}"):
+                await asyncio.sleep(0.02 - n * 0.005)
+                await leaf(n)
+
+        async def main():
+            with run_context("parallel-nested") as run:
+                await asyncio.gather(branch(1), branch(2), branch(3))
+            return run
+
+        run = asyncio.run(main())
+
+        assert {s.name for s in run.steps} == {"branch-1", "branch-2", "branch-3"}
+        for step in run.steps:
+            # Each branch's leaf must nest under its own branch, never a sibling's.
+            assert [c.name for c in step.children] == ["leaf"]
+            assert step.status == StepStatus.SUCCESS
+
+    def test_parallel_failure_does_not_affect_siblings(self):
+        @track
+        async def maybe_fail(n: int) -> int:
+            await asyncio.sleep(0.01)
+            if n == 2:
+                raise ValueError("boom")
+            return n
+
+        async def main():
+            with run_context("parallel-failure") as run:
+                results = await asyncio.gather(
+                    maybe_fail(1), maybe_fail(2), maybe_fail(3), return_exceptions=True
+                )
+            return run, results
+
+        run, results = asyncio.run(main())
+
+        assert isinstance(results[1], ValueError)
+        by_output = {s.output: s.status for s in run.steps if s.status == StepStatus.SUCCESS}
+        assert by_output == {1: StepStatus.SUCCESS, 3: StepStatus.SUCCESS}
+        failed = [s for s in run.steps if s.status == StepStatus.FAILED]
+        assert len(failed) == 1
