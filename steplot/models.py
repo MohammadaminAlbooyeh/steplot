@@ -15,6 +15,7 @@ class StepStatus(Enum):
     RUNNING = "running"
     SUCCESS = "success"
     FAILED = "failed"
+    SKIPPED = "skipped"
 
     def __str__(self) -> str:
         return self.value
@@ -82,11 +83,15 @@ class Step:
     input: Any = None
     output: Any = None
     error: str | None = None
+    traceback: str | None = None
+    skip_reason: str | None = None
     started_at: datetime = field(default_factory=datetime.now)
     ended_at: datetime | None = None
     id: str = field(default_factory=lambda: uuid4().hex)
     children: list[Step] = field(default_factory=list)
     events: list[Event] = field(default_factory=list)
+    cost: float | None = None
+    tokens: int | None = None
 
     @property
     def duration(self) -> float | None:
@@ -107,8 +112,11 @@ class Step:
     def succeed(self, output: Any = None) -> None:
         self.finish(status=StepStatus.SUCCESS, output=output)
 
-    def fail(self, error: str) -> None:
-        self.finish(status=StepStatus.FAILED, error=error)
+    def fail(self, error: str, traceback: str | None = None) -> None:
+        self.finish(status=StepStatus.FAILED, error=error, traceback=traceback)
+
+    def skip(self, reason: str | None = None) -> None:
+        self.finish(status=StepStatus.SKIPPED, skip_reason=reason)
 
     def add_child(self, name: str, **kwargs: Any) -> Step:
         """Create and register a nested child step."""
@@ -122,6 +130,18 @@ class Step:
         self.events.append(event)
         return event
 
+    def add_usage(self, cost: float | None = None, tokens: int | None = None) -> None:
+        """Accumulate cost/token usage onto this step (e.g. from an LLM call).
+
+        Can be called multiple times within a step — amounts add up rather
+        than overwrite, so several model calls inside one tracked step still
+        produce an accurate total.
+        """
+        if cost is not None:
+            self.cost = (self.cost or 0.0) + cost
+        if tokens is not None:
+            self.tokens = (self.tokens or 0) + tokens
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
@@ -130,10 +150,14 @@ class Step:
             "input": self.input,
             "output": self.output,
             "error": self.error,
+            "traceback": self.traceback,
+            "skip_reason": self.skip_reason,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "ended_at": self.ended_at.isoformat() if self.ended_at else None,
             "children": [c.to_dict() for c in self.children],
             "events": [e.to_dict() for e in self.events],
+            "cost": self.cost,
+            "tokens": self.tokens,
         }
 
     @classmethod
@@ -145,12 +169,16 @@ class Step:
             input=data.get("input"),
             output=data.get("output"),
             error=data.get("error"),
+            traceback=data.get("traceback"),
+            skip_reason=data.get("skip_reason"),
             started_at=datetime.fromisoformat(data["started_at"])
             if data.get("started_at")
             else datetime.now(),
             ended_at=datetime.fromisoformat(data["ended_at"]) if data.get("ended_at") else None,
             children=[Step.from_dict(c) for c in data.get("children", [])],
             events=[Event.from_dict(e) for e in data.get("events", [])],
+            cost=data.get("cost"),
+            tokens=data.get("tokens"),
         )
 
 
@@ -209,37 +237,59 @@ class Run:
                 success: count of steps with SUCCESS status.
                 failed: count of steps with FAILED status.
                 running: count of steps still RUNNING.
+                skipped: count of steps with SKIPPED status.
                 total_duration: sum of all finished steps' durations, in seconds.
                 slowest_step: the (name, duration) of the slowest finished step,
                     or None if no step has finished yet.
-                by_name: mapping of step name -> {"count", "total_duration"},
-                    aggregated across all steps sharing that name.
+                by_name: mapping of step name -> {"count", "total_duration",
+                    "total_cost", "total_tokens"}, aggregated across all steps
+                    sharing that name.
+                total_cost: sum of all steps' ``cost``, or None if no step
+                    recorded any cost.
+                total_tokens: sum of all steps' ``tokens``, or None if no step
+                    recorded any tokens.
         """
         steps = self._iter_steps()
 
         success = sum(1 for s in steps if s.status == StepStatus.SUCCESS)
         failed = sum(1 for s in steps if s.status == StepStatus.FAILED)
         running = sum(1 for s in steps if s.status == StepStatus.RUNNING)
+        skipped = sum(1 for s in steps if s.status == StepStatus.SKIPPED)
 
         durations = [(s.name, s.duration) for s in steps if s.duration is not None]
         total_duration = sum(d for _, d in durations)
         slowest_step = max(durations, key=lambda pair: pair[1]) if durations else None
 
+        costs = [s.cost for s in steps if s.cost is not None]
+        total_cost = sum(costs) if costs else None
+        token_counts = [s.tokens for s in steps if s.tokens is not None]
+        total_tokens = sum(token_counts) if token_counts else None
+
         by_name: dict[str, dict[str, Any]] = {}
         for s in steps:
-            entry = by_name.setdefault(s.name, {"count": 0, "total_duration": 0.0})
+            entry = by_name.setdefault(
+                s.name,
+                {"count": 0, "total_duration": 0.0, "total_cost": 0.0, "total_tokens": 0},
+            )
             entry["count"] += 1
             if s.duration is not None:
                 entry["total_duration"] += s.duration
+            if s.cost is not None:
+                entry["total_cost"] += s.cost
+            if s.tokens is not None:
+                entry["total_tokens"] += s.tokens
 
         return {
             "total_steps": len(steps),
             "success": success,
             "failed": failed,
             "running": running,
+            "skipped": skipped,
             "total_duration": total_duration,
             "slowest_step": slowest_step,
             "by_name": by_name,
+            "total_cost": total_cost,
+            "total_tokens": total_tokens,
         }
 
     def to_dict(self) -> dict[str, Any]:

@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
+import contextvars
 import functools
 import inspect
 import logging
+import traceback as traceback_module
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from datetime import datetime
 from typing import Any
 
-from steplot.models import Event, Run, Step, StepStatus
+from steplot.models import Event, Run, Step
 
 # Module-level current run and current step, stored in ContextVars for async-safety
 _current_run: ContextVar[Run | None] = ContextVar("current_run", default=None)
@@ -19,6 +20,160 @@ _current_step: ContextVar[Step | None] = ContextVar("current_step", default=None
 
 # Logger integration
 _logger = logging.getLogger("steplot")
+
+# Global kill switch — when False, @track/log_event/step_context become no-ops
+# that just call through to the wrapped function, with no Step/Event recorded.
+_enabled: bool = True
+
+# Captured-value hygiene: cap on repr length and keys/callback for redaction.
+_max_repr_len: int | None = None
+_redact_keys: set[str] = set()
+_redact_fn: Callable[[str, Any], Any] | None = None
+
+# Listeners notified every time a Step finishes (success, failure, or skip).
+_step_listeners: list[Callable[[Step], None]] = []
+
+
+class StepSkipped(Exception):  # noqa: N818 - control-flow signal, not an error
+    """Raise inside a tracked step or ``step_context`` to mark it skipped.
+
+    The step is recorded with ``StepStatus.SKIPPED`` and the exception is
+    swallowed rather than propagated — this is a deliberate control-flow
+    signal (e.g. "cache hit, nothing to do"), not a failure.
+
+    Example:
+        @track
+        def maybe_fetch(key):
+            if cache.has(key):
+                raise StepSkipped("cache hit")
+            return fetch(key)
+    """
+
+
+def set_enabled(enabled: bool) -> None:
+    """Globally enable or disable step tracking.
+
+    When disabled, ``@track`` calls the wrapped function directly (no Step is
+    created), ``step_context`` yields a disconnected Step without registering
+    it on the run, and ``log_event`` is a no-op. Useful for turning tracking
+    off in production without removing decorators.
+    """
+    global _enabled
+    _enabled = enabled
+
+
+def is_enabled() -> bool:
+    """Return whether step tracking is currently enabled."""
+    return _enabled
+
+
+def set_max_repr_len(n: int | None) -> None:
+    """Cap the repr() length of captured step input/output.
+
+    When set, any captured argument, kwarg, or return value whose ``repr()``
+    exceeds ``n`` characters is replaced with a truncated placeholder string.
+    Pass None (the default) to capture values uncapped.
+    """
+    global _max_repr_len
+    _max_repr_len = n
+
+
+def set_redact_keys(keys: Any) -> None:
+    """Replace the set of kwarg names redacted from captured step input.
+
+    Any kwarg whose name is in ``keys`` is replaced with ``"***redacted***"``
+    before being stored on the Step. Positional args are not covered, since
+    they carry no name to match against.
+    """
+    global _redact_keys
+    _redact_keys = set(keys)
+
+
+def set_redact_fn(fn: Callable[[str, Any], Any] | None) -> None:
+    """Set a callback applied to every captured kwarg before storage.
+
+    ``fn(key, value)`` returns the value to store (return ``value`` unchanged
+    to keep it). Runs after ``_redact_keys`` substitution. Pass None to clear.
+    """
+    global _redact_fn
+    _redact_fn = fn
+
+
+def _redact_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+    result = {}
+    for key, value in kwargs.items():
+        if key in _redact_keys:
+            value = "***redacted***"
+        elif _redact_fn is not None:
+            value = _redact_fn(key, value)
+        result[key] = value
+    return result
+
+
+def _truncate(value: Any) -> Any:
+    if _max_repr_len is None:
+        return value
+    r = repr(value)
+    if len(r) <= _max_repr_len:
+        return value
+    omitted = len(r) - _max_repr_len
+    return f"{r[:_max_repr_len]}... ({omitted} more chars truncated)"
+
+
+def _capture_input(args: tuple, kwargs: dict) -> dict[str, Any]:
+    captured_kwargs = _redact_kwargs(kwargs)
+    return {
+        "args": [_truncate(a) for a in args],
+        "kwargs": {k: _truncate(v) for k, v in captured_kwargs.items()},
+    }
+
+
+def add_step_listener(fn: Callable[[Step], None]) -> None:
+    """Register a callback invoked every time a Step finishes.
+
+    Used to build live/streaming views (see ``display.live_run_context``) or
+    to append finished steps to a log as they happen. Listener exceptions are
+    swallowed so a broken listener never breaks tracking.
+    """
+    _step_listeners.append(fn)
+
+
+def remove_step_listener(fn: Callable[[Step], None]) -> None:
+    """Unregister a callback previously passed to ``add_step_listener``."""
+    if fn in _step_listeners:
+        _step_listeners.remove(fn)
+
+
+def _notify_step_finished(step: Step) -> None:
+    for fn in list(_step_listeners):
+        try:
+            fn(step)
+        except Exception:  # noqa: BLE001 - a listener must never break tracking
+            _logger.exception("steplot: step listener raised")
+
+
+def with_current_context(fn: Callable) -> Callable:
+    """Wrap ``fn`` so it runs with the current run/step context propagated.
+
+    ``ContextVar``s (used to track the active run/step) don't cross raw
+    ``threading.Thread`` boundaries on their own — a function started via
+    ``threading.Thread(target=fn)`` sees no active run even if one is active
+    on the calling thread. Wrap the target with this helper to carry the
+    calling thread's context into the new thread.
+
+    Example:
+        with run_context("pipeline") as run:
+            t = threading.Thread(target=with_current_context(worker))
+            t.start()
+            t.join()
+    """
+    ctx = contextvars.copy_context()
+
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        return ctx.run(fn, *args, **kwargs)
+
+    return wrapper
 
 
 def get_current_run() -> Run | None:
@@ -87,6 +242,10 @@ def step_context(name: str) -> Iterator[Step]:
                 with step_context("validate"):
                     ...
     """
+    if not _enabled:
+        yield Step(name=name)
+        return
+
     run, run_token = _ensure_run()
     step = Step(name=name)
 
@@ -100,12 +259,15 @@ def step_context(name: str) -> Iterator[Step]:
     step_token = _current_step.set(step)
     try:
         yield step
+    except StepSkipped as exc:
+        step.skip(str(exc) or None)
     except Exception as exc:  # noqa: BLE001 - always record and re-raise
-        step.fail(repr(exc))
+        step.fail(repr(exc), traceback=traceback_module.format_exc())
         raise
     finally:
         if step.ended_at is None:
             step.succeed()
+        _notify_step_finished(step)
         _current_step.reset(step_token)
         _current_step.set(previous_step)
         if run_token is not None:
@@ -127,9 +289,11 @@ def log_event(level: int, message: str, **data: Any) -> Event | None:
     Returns:
         The created :class:`~steplot.models.Event`, or None if no run existed.
     """
+    _logger.log(level, message)
+    if not _enabled:
+        return None
     run = _current_run.get()
     step = _current_step.get()
-    _logger.log(level, message)
     if step is not None:
         return step.add_event(level, message, **data)
     if run is not None:
@@ -214,52 +378,64 @@ def _append_step(step: Step) -> None:
 
 
 def _run_tracked_sync(fn: Callable, name: str, args: tuple, kwargs: dict, capture_args: bool) -> Any:
+    if not _enabled:
+        return fn(*args, **kwargs)
+
     run, token = _ensure_run()
     step = Step(
         name=name,
-        input={"args": list(args), "kwargs": kwargs} if capture_args else None,
+        input=_capture_input(args, kwargs) if capture_args else None,
     )
     _append_step(step)
     _emit(logging.INFO, f"→ start: {name}")
     try:
         result = fn(*args, **kwargs)
-        step.succeed(output=result)
+        step.succeed(output=_truncate(result))
         _emit(logging.INFO, f"✓ done: {name}")
         return result
+    except StepSkipped as exc:
+        step.skip(str(exc) or None)
+        _emit(logging.INFO, f"⤼ skipped: {name}")
+        return None
     except Exception as exc:
-        step.fail(repr(exc))
+        step.fail(repr(exc), traceback=traceback_module.format_exc())
         _emit(logging.ERROR, f"✗ error: {name} — {exc!r}")
-        if token is not None:
-            _current_run.reset(token)
         raise
     finally:
-        step.ended_at = datetime.now()
-        if token is not None and step.status == StepStatus.SUCCESS:
+        _notify_step_finished(step)
+        if token is not None:
+            run.finish()
             _current_run.reset(token)
 
 
 async def _run_tracked_async(fn: Callable, name: str, args: tuple, kwargs: dict, capture_args: bool) -> Any:
+    if not _enabled:
+        return await fn(*args, **kwargs)
+
     run, token = _ensure_run()
     step = Step(
         name=name,
-        input={"args": list(args), "kwargs": kwargs} if capture_args else None,
+        input=_capture_input(args, kwargs) if capture_args else None,
     )
     _append_step(step)
     _emit(logging.INFO, f"→ start: {name}")
     try:
         result = await fn(*args, **kwargs)
-        step.succeed(output=result)
+        step.succeed(output=_truncate(result))
         _emit(logging.INFO, f"✓ done: {name}")
         return result
+    except StepSkipped as exc:
+        step.skip(str(exc) or None)
+        _emit(logging.INFO, f"⤼ skipped: {name}")
+        return None
     except Exception as exc:
-        step.fail(repr(exc))
+        step.fail(repr(exc), traceback=traceback_module.format_exc())
         _emit(logging.ERROR, f"✗ error: {name} — {exc!r}")
-        if token is not None:
-            _current_run.reset(token)
         raise
     finally:
-        step.ended_at = datetime.now()
-        if token is not None and step.status == StepStatus.SUCCESS:
+        _notify_step_finished(step)
+        if token is not None:
+            run.finish()
             _current_run.reset(token)
 
 

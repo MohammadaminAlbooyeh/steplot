@@ -9,6 +9,7 @@ _STATUS_STYLE = {
     StepStatus.SUCCESS: {"fill": "#10b981", "stroke": "#047857", "text": "#fff"},
     StepStatus.FAILED: {"fill": "#ef4444", "stroke": "#991b1b", "text": "#fff"},
     StepStatus.RUNNING: {"fill": "#f59e0b", "stroke": "#b45309", "text": "#fff"},
+    StepStatus.SKIPPED: {"fill": "#94a3b8", "stroke": "#475569", "text": "#fff"},
 }
 
 
@@ -81,6 +82,7 @@ def to_mermaid(run: Run) -> str:
     lines.append("    classDef sSuccess fill:#10b981,stroke:#047857,color:#fff")
     lines.append("    classDef sFailed fill:#ef4444,stroke:#991b1b,color:#fff")
     lines.append("    classDef sRunning fill:#f59e0b,stroke:#b45309,color:#fff")
+    lines.append("    classDef sSkipped fill:#94a3b8,stroke:#475569,color:#fff")
     lines.append("    classDef sRun fill:#6366f1,stroke:#4338ca,color:#fff")
 
     return "\n".join(lines) + "\n"

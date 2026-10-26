@@ -17,6 +17,17 @@ JSON file.
 - `to_mermaid` / `to_html` -- export a run as a Mermaid flowchart or standalone HTML report.
 - `Run.summary()` -- aggregate step counts, durations, and the slowest step.
 - `steplot` CLI -- `show`/`export` a saved run from the terminal, no Python needed.
+- `set_max_repr_len` / `set_redact_keys` / `set_redact_fn` -- cap and redact captured input/output.
+- `StepSkipped` -- raise inside a tracked step to mark it skipped instead of failed.
+- `live_run_context` / `add_step_listener` -- stream step completions as they happen.
+- `diff_runs` -- compare two runs for new failures, fixed failures, and duration regressions.
+- `jsonl_log` / `load_jsonl` -- crash-safe, append-only persistence for long-running runs.
+- `to_otel_spans` -- export a run as OpenTelemetry spans (requires `opentelemetry-sdk`).
+- `set_enabled` / `with_current_context` -- a global kill switch, and ContextVar propagation across threads.
+- `Step.add_usage` -- track LLM cost/token usage per step, rolled up in `Run.summary()`.
+- `summarize_runs` -- aggregate per-step duration stats (p50/p95, success/failure counts) across many saved runs.
+- `steplot watch` -- live-tail a `jsonl_log` file from the terminal as steps complete.
+- `steplot stats` -- CLI wrapper around `summarize_runs` for a glob of saved run files.
 
 ## Installation
 
@@ -112,6 +123,112 @@ from steplot import save_run, load_run
 
 save_run(run, "steplot/runs/run-1.json")
 loaded = load_run("steplot/runs/run-1.json")
+```
+
+For long-running processes, `jsonl_log` appends each step to disk as soon as it
+finishes, so a crash mid-run doesn't lose everything that already completed:
+
+```python
+from steplot import run_context, jsonl_log, load_jsonl
+
+with run_context("pipeline") as run, jsonl_log("pipeline.jsonl"):
+    ...  # each finished step is flushed to pipeline.jsonl immediately
+
+steps = load_jsonl("pipeline.jsonl")
+```
+
+## Skipping steps
+
+Raise `StepSkipped` inside a tracked function (or a `step_context` block) to
+record a step as deliberately skipped rather than failed -- e.g. a cache hit
+that short-circuits work. The exception is swallowed, not propagated:
+
+```python
+from steplot import track, StepSkipped
+
+@track
+def maybe_fetch(key):
+    if cache.has(key):
+        raise StepSkipped("cache hit")
+    return fetch(key)
+```
+
+## Watching a run live
+
+`display_run` only renders once a run is finished. `live_run_context` prints
+each step to stdout the moment it completes, which is more useful for
+watching a long agent run interactively:
+
+```python
+from steplot import live_run_context, track
+
+with live_run_context("agent") as run:
+    research("transformers")
+    summarize(...)
+```
+
+For custom live views (a progress bar, a dashboard), subscribe directly with
+`add_step_listener(fn)` -- `fn` is called with each finished `Step`.
+
+## Protecting captured input/output
+
+By default `@track` captures full args/kwargs and return values. Cap how much
+is stored, and redact sensitive kwargs, globally:
+
+```python
+from steplot import set_max_repr_len, set_redact_keys, set_redact_fn
+
+set_max_repr_len(500)                       # truncate long captured values
+set_redact_keys(["password", "api_key"])    # mask matching kwargs
+set_redact_fn(lambda key, value: "***" if "token" in key else value)
+```
+
+## Comparing runs
+
+`diff_runs` compares two runs by step name -- useful for catching regressions
+between agent eval runs:
+
+```python
+from steplot import diff_runs
+
+diff = diff_runs(baseline_run, candidate_run)
+diff["new_failures"]        # step names that failed only in candidate
+diff["fixed"]               # step names that failed only in baseline
+diff["by_name"]["research"]["duration_delta"]
+```
+
+## Turning tracking off
+
+```python
+from steplot import set_enabled
+
+set_enabled(False)  # @track calls functions directly; no steps are recorded
+```
+
+## Threading
+
+`ContextVar`s don't cross raw `threading.Thread` boundaries. Wrap a thread's
+target with `with_current_context` to carry the active run/step into it:
+
+```python
+import threading
+from steplot import run_context, with_current_context, step_context
+
+with run_context("pipeline") as run:
+    t = threading.Thread(target=with_current_context(worker))
+    t.start()
+    t.join()
+```
+
+## OpenTelemetry export
+
+With `opentelemetry-sdk` installed (`pip install steplot[otel]`), export a run
+as spans into any configured OpenTelemetry exporter:
+
+```python
+from steplot import to_otel_spans
+
+to_otel_spans(run)  # uses the globally configured TracerProvider
 ```
 
 ## Exporting to Mermaid / HTML

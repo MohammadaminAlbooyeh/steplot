@@ -11,10 +11,12 @@ from steplot import (
     display_run,
     get_current_run,
     get_current_step,
+    is_enabled,
     load_run,
     log_event,
     run_context,
     save_run,
+    set_enabled,
     step_context,
     track,
 )
@@ -654,3 +656,101 @@ class TestAsyncParallel:
         assert by_output == {1: StepStatus.SUCCESS, 3: StepStatus.SUCCESS}
         failed = [s for s in run.steps if s.status == StepStatus.FAILED]
         assert len(failed) == 1
+
+
+class TestTracebackCapture:
+    def test_track_sync_failure_captures_traceback(self):
+        @track
+        def boom():
+            raise ValueError("kaboom")
+
+        with run_context("r") as run, pytest.raises(ValueError):
+            boom()
+
+        step = run.steps[0]
+        assert step.status == StepStatus.FAILED
+        assert step.error == "ValueError('kaboom')"
+        assert step.traceback is not None
+        assert "ValueError: kaboom" in step.traceback
+        assert "Traceback" in step.traceback
+
+    def test_track_async_failure_captures_traceback(self):
+        @track
+        async def boom():
+            raise ValueError("async-kaboom")
+
+        async def main():
+            with run_context("r") as run, pytest.raises(ValueError):
+                await boom()
+            return run
+
+        run = asyncio.run(main())
+        step = run.steps[0]
+        assert step.traceback is not None
+        assert "ValueError: async-kaboom" in step.traceback
+
+    def test_step_context_failure_captures_traceback(self):
+        with run_context("r") as run, pytest.raises(RuntimeError), step_context("inner"):
+            raise RuntimeError("inner-boom")
+
+        step = run.steps[0]
+        assert step.traceback is not None
+        assert "RuntimeError: inner-boom" in step.traceback
+
+    def test_traceback_round_trips_through_json(self, tmp_path):
+        @track
+        def boom():
+            raise ValueError("kaboom")
+
+        with run_context("r") as run, pytest.raises(ValueError):
+            boom()
+
+        path = save_run(run, str(tmp_path / "run.json"))
+        loaded = load_run(path)
+        assert loaded.steps[0].traceback == run.steps[0].traceback
+
+
+class TestEnabledSwitch:
+    def test_disabling_tracking_skips_step_creation(self):
+        set_enabled(False)
+        try:
+
+            @track
+            def work(n):
+                return n * 2
+
+            with run_context("r") as run:
+                result = work(5)
+
+            assert result == 10
+            assert run.steps == []
+        finally:
+            set_enabled(True)
+
+    def test_disabling_tracking_skips_log_event(self):
+        set_enabled(False)
+        try:
+            with run_context("r") as run:
+                event = log_event(logging.INFO, "hello")
+            assert event is None
+            assert run.events == []
+        finally:
+            set_enabled(True)
+
+    def test_disabling_step_context_does_not_register_on_run(self):
+        set_enabled(False)
+        try:
+            with run_context("r") as run, step_context("inner") as step:
+                pass
+            assert step.name == "inner"
+            assert run.steps == []
+        finally:
+            set_enabled(True)
+
+    def test_is_enabled_reflects_state(self):
+        assert is_enabled() is True
+        set_enabled(False)
+        try:
+            assert is_enabled() is False
+        finally:
+            set_enabled(True)

@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from typing import Any
+
 from .models import Event, Run, Step, StepStatus
 
 
@@ -11,6 +15,8 @@ def _status_annotation(step: Step) -> str:
         return "  ✗"
     if step.status == StepStatus.RUNNING:
         return "  ..."
+    if step.status == StepStatus.SKIPPED:
+        return "  ⤼"
     return ""
 
 
@@ -35,6 +41,11 @@ def _render_step(step: Step, prefix: str, is_last: bool, lines: list[str]) -> No
 
     if step.error:
         lines.append(f"{child_prefix}  error: {step.error}")
+    if step.traceback:
+        for tb_line in step.traceback.rstrip().splitlines():
+            lines.append(f"{child_prefix}  {tb_line}")
+    if step.skip_reason:
+        lines.append(f"{child_prefix}  skipped: {step.skip_reason}")
 
 
 def _render_event(event: Event, prefix: str, lines: list[str]) -> None:
@@ -50,11 +61,19 @@ def _render_summary(run: Run, lines: list[str]) -> None:
         f"  ✓{summary['success']}"
         f"  ✗{summary['failed']}"
         f"  …{summary['running']}"
+        f"  ⤼{summary['skipped']}"
         f"  total={summary['total_duration']:.2f}s"
     )
     if summary["slowest_step"] is not None:
         name, duration = summary["slowest_step"]
         lines.append(f"  slowest: {name}  [{duration:.2f}s]")
+    if summary["total_cost"] is not None or summary["total_tokens"] is not None:
+        parts = []
+        if summary["total_cost"] is not None:
+            parts.append(f"cost=${summary['total_cost']:.4f}")
+        if summary["total_tokens"] is not None:
+            parts.append(f"tokens={summary['total_tokens']}")
+        lines.append("  " + "  ".join(parts))
 
 
 def display_run(run: Run, show_summary: bool = False) -> None:
@@ -93,3 +112,42 @@ def display_run(run: Run, show_summary: bool = False) -> None:
     for line in lines:
         print(f"║{line}")
     print(bottom)
+
+
+def _status_glyph(step: Step) -> str:
+    return {
+        StepStatus.SUCCESS: "✓",
+        StepStatus.FAILED: "✗",
+        StepStatus.RUNNING: "…",
+        StepStatus.SKIPPED: "⤼",
+    }.get(step.status, "?")
+
+
+@contextmanager
+def live_run_context(name: str = "run", **metadata: Any) -> Iterator[Run]:
+    """Like ``run_context``, but prints each step to stdout as it finishes.
+
+    Use this instead of ``run_context`` + a final ``display_run`` call when
+    watching a long-running agent interactively — each step is printed the
+    moment it completes rather than only once the whole run is done.
+
+    Example:
+        with live_run_context("agent") as run:
+            research("transformers")
+            summarize(...)
+    """
+    from .tracker import add_step_listener, remove_step_listener, run_context
+
+    def _on_step(step: Step) -> None:
+        duration = _format_duration(step.duration)
+        print(f"  {_status_glyph(step)} {step.name}  {duration}")
+
+    print(f"▶ run: {name}")
+    with run_context(name, **metadata) as run:
+        add_step_listener(_on_step)
+        try:
+            yield run
+        finally:
+            remove_step_listener(_on_step)
+    duration = _format_duration(run.duration)
+    print(f"■ run finished  {duration}")

@@ -3,7 +3,7 @@
 from pathlib import Path
 
 import pytest
-from steplot import run_context, save_run, track
+from steplot import run_context, save_run, step_context, track
 from steplot.cli import main
 from steplot.tracker import _current_run, _current_step
 
@@ -94,3 +94,48 @@ def test_show_missing_file_raises(tmp_path: Path):
     missing = tmp_path / "nope.json"
     with pytest.raises(FileNotFoundError):
         main(["show", str(missing)])
+
+
+def test_stats_prints_per_step_aggregates(run_file: Path, tmp_path: Path, capsys):
+    exit_code = main(["stats", str(tmp_path / "*.json")])
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "1 runs" in out
+    assert "fetch" in out
+    assert "p50=" in out
+
+
+def test_stats_no_matches(tmp_path: Path, capsys):
+    exit_code = main(["stats", str(tmp_path / "nothing-*.json")])
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "0 runs" in out
+
+
+def test_watch_prints_new_steps_then_stops(tmp_path: Path, capsys, monkeypatch):
+    from steplot import jsonl_log
+
+    log_path = tmp_path / "pipeline.jsonl"
+    log_path.touch()
+
+    calls = {"n": 0}
+
+    def fake_sleep(_seconds: float) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            with run_context("watch-demo"), jsonl_log(str(log_path)), step_context("seen-after-start"):
+                pass
+        if calls["n"] > 3:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr("steplot.cli.time.sleep", fake_sleep)
+
+    exit_code = main(["watch", str(log_path), "--interval", "0"])
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "watching" in out
+    assert "seen-after-start" in out
+    assert "stopped watching" in out

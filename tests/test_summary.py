@@ -14,9 +14,12 @@ def test_summary_empty_run():
         "success": 0,
         "failed": 0,
         "running": 0,
+        "skipped": 0,
         "total_duration": 0,
         "slowest_step": None,
         "by_name": {},
+        "total_cost": None,
+        "total_tokens": None,
     }
 
 
